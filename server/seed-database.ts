@@ -9,10 +9,11 @@ import { MongoDBAtlasVectorSearch } from "@langchain/mongodb"
 // Import Zod for data schema validation and type safety
 import { z } from "zod"
 // Load environment variables from .env file (API keys, connection strings)
-import "dotenv/config"
+import dotenv from "dotenv";
+dotenv.config();
 
 // Create MongoDB client instance using connection string from environment variables
-const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string)
+const client = new MongoClient(process.env.MONGODB_ATLAS_URL as string)
 
 // Initialize Google Gemini chat model for generating synthetic furniture data
 const llm = new ChatGoogleGenerativeAI({
@@ -53,8 +54,9 @@ const itemSchema = z.object({
 type Item = z.infer<typeof itemSchema>
 
 // Create parser that ensures AI output matches our item schema
-const parser = StructuredOutputParser.fromZodSchema(z.array(itemSchema))
-
+const parser = StructuredOutputParser.fromZodSchema(
+  z.array(itemSchema) as any
+)
 // Function to create database and collection before seeding
 async function setupDatabaseAndCollection(): Promise<void> {
   console.log("Setting up database and collection...")
@@ -114,7 +116,8 @@ async function generateSyntheticData(): Promise<Item[]> {
   // Send prompt to AI and get response
   const response = await llm.invoke(prompt)
   // Parse AI response into structured array of Item objects
-  return parser.parse(response.content as string)
+  return parser.parse(response.content as string) as Promise<Item[]>
+
 }
 
 // Function to create a searchable text summary from furniture item data

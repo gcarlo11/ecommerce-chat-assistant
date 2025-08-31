@@ -87,3 +87,89 @@ async function createVectorSearchIndex(): Promise<void> {
     }
 
 }
+
+async function generateSyntheticData(): Promise<Item[]> {
+    const prompt = `You are a helpful assistant that generates furniture store item data.
+    Generate 10 furniture store item. Each record should include the following fields: item_id,
+    item_name, item_description, brand, manufacturer_address (with street, city, state, postal_code, country),
+    prices (with full_price and sale_price), categories (array of strings), user_reviews (array with review_date, rating, comment),
+    and notes. Ensure the data is realistic and varied.
+    
+    ${parser.getFormatInstructions()}`
+
+    console.log("Generating synthetic data... ")
+
+    const response = await llm.invoke(prompt)
+
+    return parser.parse(response.content as string) //parse the response to match the schema
+}
+
+async function createItemSummary(item: Item): Promise<string> {
+    return new Promise((resolve) => {
+        const manufacturerDetails = `Made in ${item.manufacturer_address.country}`
+        const categories = item.categories.join(", ")
+        const userReviews = item.user_reviews.map((review)=>
+            `Rated ${review.rating} on ${review.review_date}: "${review.comment}"`).join(" ")
+        const basicInfo = `${item.item_name} ${item.item_description} from the brand ${item.brand}.`
+        const pricing  = `Full price is $${item.prices.full_price}, now on sale for $${item.prices.sale_price}.`
+        const notes = item.notes
+
+        const summary = `${basicInfo}. Manufacturer: ${manufacturerDetails}.
+        Categories: ${categories}. Reviews: ${userReviews}.
+        Price: ${pricing}. Notes: ${notes}`
+
+        resolve(summary)
+    })
+}
+
+async function seedDatabase(): Promise<void> {
+    try {
+        await client.connect()
+        await client.db("admin").command({ ping: 1 }) //test connection
+        console.log("Connected to MongoDB Atlas.")
+
+        await setupDatabaseAndCollection()
+        await createVectorSearchIndex()
+
+        const db = client.db("inventory_database")
+        const collection = db.collection("items")
+
+        await collection.deleteMany({}) //clear existing data   
+        console.log("Cleared existing data in 'items' collection.")
+
+        const syntheticData = await generateSyntheticData()
+
+        const recordsWithEmbeddings = await Promise.all(
+            syntheticData.map(async (record) => ({
+                pageContent: await createItemSummary(record),
+                metadata: {...record}, 
+            }))
+        )
+
+        for (const record of recordsWithEmbeddings) {
+            await MongoDBAtlasVectorSearch.fromDocuments(
+                [record],
+                new GoogleGenerativeAIEmbeddings({ 
+                    apiKey: process.env.GOOGLE_API_KEY,
+                    modelName: "text-embedding-004"
+                }),
+                {
+                    collection,
+                    indexName: "vector_index",
+                    textKey: "embedding_text",
+                    embeddingKey: "embedding"
+                }
+            )
+            console.log(`Successfully inserted item: ${record.metadata.item_name}`)
+        }
+        console.log("Database seeding completed.")
+
+    } catch (error) {
+        console.error("Error seeding database:", error)
+    } finally {
+        await client.close()
+        console.log("Disconnected from MongoDB Atlas.")
+    }
+}
+
+seedDatabase().catch(console.error)
